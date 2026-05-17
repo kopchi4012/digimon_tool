@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 
 import javax.swing.DefaultListCellRenderer;
@@ -29,7 +30,11 @@ import javax.swing.LayoutStyle.ComponentPlacement;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.border.BevelBorder;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.xml.parsers.ParserConfigurationException;
 
 import org.xml.sax.SAXException;
@@ -60,6 +65,8 @@ public class KPTFPanel extends PayloadPanel {
     private final JButton btnImportXml = new JButton("Import XML");
     private final JList<Integer> list = new JList<>();
     private DefaultListModel<Integer> model = new DefaultListModel<>();
+    private final List<Integer> allCharacters = new ArrayList<>();
+    private final Timer searchTimer = new Timer(150, a -> updateSearchSelection());
     
     private final JPanel tnfoEntryPanel = new JPanel();
     private final JPanel tnfoHeaderPanel = new JPanel();
@@ -108,8 +115,24 @@ public class KPTFPanel extends PayloadPanel {
         xTransLabel.setLabelFor(xTransField);
         lblSearch.setFont(new Font("Tahoma", Font.PLAIN, 14));
         lblSearch.setLabelFor(searchField);
-        searchField.setEditable(false);
         searchField.setColumns(10);
+        searchTimer.setRepeats(false);
+        searchField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                scheduleListUpdate();
+            }
+            
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                scheduleListUpdate();
+            }
+            
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                scheduleListUpdate();
+            }
+        });
         setSelectedFile(selected);
         tnfoEntryPanel.setVisible(false);
         
@@ -121,13 +144,14 @@ public class KPTFPanel extends PayloadPanel {
         }));
         
         btnRemove.setAction(new FunctionAction("Remove", a -> {
-            if (list.getSelectedValue() == -1)
+            if (list.getSelectedValue() == null || list.getSelectedValue() == -1)
                 return;
             
             list.getSelectedValuesList().forEach(character ->  {
                 tnfo.removeAssignment(character);
-                model.removeElement(character);
             });
+            updateCharacterCache();
+            regenerateListModel();
         }));
         
         btnImportXml.setAction(new FunctionAction("Import XML", a -> {
@@ -152,6 +176,7 @@ public class KPTFPanel extends PayloadPanel {
             catch (ParserConfigurationException | SAXException | IOException e) {
                 Main.LOGGER.severe("Error while loading font XML!" + e.getMessage());
             }
+            updateCharacterCache();
             regenerateListModel();
         }));
         
@@ -172,6 +197,7 @@ public class KPTFPanel extends PayloadPanel {
             }
             
             tnfo.addAssignment(i, new TNFOEntry());
+            updateCharacterCache();
             regenerateListModel();
         }));
         
@@ -245,12 +271,70 @@ public class KPTFPanel extends PayloadPanel {
     }
     
     private void regenerateListModel() {
+        if (tnfo == null)
+            return;
+        
         model.clear();
         model.addElement(-1); // Default element
+        allCharacters.forEach(model::addElement);
+        updateSearchSelection();
+    }
+    
+    private void scheduleListUpdate() {
+        searchTimer.restart();
+    }
+    
+    private void updateCharacterCache() {
+        allCharacters.clear();
+        if (tnfo == null)
+            return;
+        
         tnfo.getAssignments().forEach((a, b) -> {
             if (b != null)
-                model.addElement(a);
+                allCharacters.add(a);
         });
+    }
+    
+    private void updateSearchSelection() {
+        Integer character = getSearchCharacter();
+        if (character != null && model.contains(character))
+            list.setSelectedValue(character, true);
+        else {
+            list.clearSelection();
+            entry = null;
+            image.setImage(null);
+            tnfoEntryPanel.setVisible(false);
+        }
+        
+        SwingUtilities.invokeLater(searchField::requestFocusInWindow);
+    }
+    
+    private Integer getSearchCharacter() {
+        String search = searchField.getText().trim();
+        if (search.isEmpty())
+            return null;
+        
+        if (search.length() == 1)
+            return (int) search.charAt(0);
+        
+        String normalizedSearch = search.toLowerCase(Locale.ROOT);
+        try {
+            if (normalizedSearch.startsWith("0x"))
+                return Integer.parseInt(normalizedSearch.substring(2), 16);
+            
+            if (normalizedSearch.matches("[0-9]+")) {
+                Integer decimalCharacter = Integer.parseInt(normalizedSearch);
+                if (model.contains(decimalCharacter))
+                    return decimalCharacter;
+                
+                return Integer.parseInt(normalizedSearch, 16);
+            }
+        }
+        catch (NumberFormatException e) {
+            return null;
+        }
+        
+        return null;
     }
     
     @Override
@@ -287,6 +371,7 @@ public class KPTFPanel extends PayloadPanel {
         
         previewWindow.setTNFO(tnfo);
         previewWindow.setGMIOs(gmios);
+        updateCharacterCache();
         regenerateListModel();
         
         setupLayout();
